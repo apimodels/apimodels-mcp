@@ -37,6 +37,7 @@ import { homedir } from 'node:os'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { makeUploadToken, UPLOAD_TTL_MS } from './upload-token.js'
 import { resolveKey, runCli, CLI_COMMANDS, KEYS_URL } from './credentials.js'
+import { buildProfileServer, type Profile, type ProfileHelpers } from './profiles.js'
 
 const BASE_URL = (process.env.APIMODELS_BASE_URL || 'https://api.apimodels.app/v1').replace(/\/$/, '')
 /** Longest a single tool call may wait. Claude Code's stdio idle limit is 30 min; stay well under it. */
@@ -1239,6 +1240,23 @@ export function buildServer(): McpServer {
   return server
 }
 
+/** Helpers handed to the single-purpose hosted connectors in profiles.ts (no import cycle). */
+const profileHelpers: ProfileHelpers = {
+  version: VERSION,
+  waitCap: () => runtime.waitCap,
+  apiFetch,
+  submitAndWait,
+  pollTask,
+  transcriptText,
+  imagePreview,
+  uploadLink: (filename: string) => {
+    const name = basename(filename).replace(/[^\w.\-]/g, '_').slice(0, 120) || 'upload.bin'
+    const base = (process.env.MCP_PUBLIC_URL || '').replace(/\/$/, '')
+    return { url: `${base}/upload/${makeUploadToken(requireKey())}?name=${encodeURIComponent(name)}`, ttlMinutes: UPLOAD_TTL_MS / 60_000 }
+  },
+}
+export const buildProfile = (p: Profile) => buildProfileServer(p, profileHelpers)
+
 async function main() {
   if (!resolveKey()) console.error(`[apimodels-mcp] warning: ${NO_KEY_MSG}`)
   const transport = new StdioServerTransport()
@@ -1258,7 +1276,7 @@ if (process.env.APIMODELS_MCP_NO_MAIN === '1') {
   const i = process.argv.indexOf('--port')
   const port = Number(i > 0 ? process.argv[i + 1] : process.env.PORT) || 8095
   process.env.MCP_PUBLIC_URL ||= `http://localhost:${port}`
-  import('./http.js').then(({ serve }) => serve({ buildServer, requestKey, apiBaseUrl: BASE_URL, uploadBytes, guessMime }, port)).catch((e) => {
+  import('./http.js').then(({ serve }) => serve({ buildServer, buildProfile, requestKey, apiBaseUrl: BASE_URL, uploadBytes, guessMime }, port)).catch((e) => {
     console.error('[apimodels-mcp] fatal:', e)
     process.exit(1)
   })

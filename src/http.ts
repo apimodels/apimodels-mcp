@@ -9,6 +9,7 @@
  *
  * Shape:
  *   POST /mcp                                   Streamable HTTP, stateless: one McpServer + transport per request
+ *   POST /mcp/<transcribe|social|design>        single-purpose connectors (profiles.ts), same auth
  *   GET  /.well-known/oauth-protected-resource[/mcp]   RFC 9728 metadata pointing at the authorization server
  *   PUT|POST /upload/<token>?name=…             takes a local file the agent uploads with curl (see upload-token.ts)
  *   GET  /healthz
@@ -26,9 +27,12 @@ import type { AsyncLocalStorage } from 'node:async_hooks'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { openUploadToken } from './upload-token.js'
+import { isProfile, PROFILE_INFO, type Profile } from './profiles.js'
 
 export interface ServeDeps {
   buildServer: () => McpServer
+  /** Single-purpose connectors at /mcp/<profile> (profiles.ts). */
+  buildProfile: (p: Profile) => McpServer
   requestKey: AsyncLocalStorage<{ key: string }>
   apiBaseUrl: string
   uploadBytes: (buf: Buffer, filename: string, contentType: string) => Promise<string>
@@ -67,14 +71,17 @@ async function readBody(req: IncomingMessage, limit: number): Promise<Buffer | n
 export async function serve(deps: ServeDeps, port: number): Promise<void> {
   const publicUrl = (process.env.MCP_PUBLIC_URL || `http://localhost:${port}`).replace(/\/$/, '')
   const authServer = (process.env.MCP_AUTH_SERVER || 'https://apimodels.app').replace(/\/$/, '')
-  const resourceMetadataUrl = `${publicUrl}/.well-known/oauth-protected-resource/mcp`
-  const metadata = {
-    resource: `${publicUrl}/mcp`,
+  // RFC 9728: one protected resource per endpoint. /mcp/<profile> gets its own metadata so a client
+  // that signs in to a single-purpose connector is pointed at the right resource.
+  const resourcePathOf = (profile?: Profile) => (profile ? `/mcp/${profile}` : '/mcp')
+  const resourceMetadataUrlOf = (profile?: Profile) => `${publicUrl}/.well-known/oauth-protected-resource${resourcePathOf(profile)}`
+  const metadataOf = (profile?: Profile) => ({
+    resource: `${publicUrl}${resourcePathOf(profile)}`,
     authorization_servers: [authServer],
     bearer_methods_supported: ['header'],
-    resource_name: 'apimodels',
+    resource_name: profile ? PROFILE_INFO[profile].resourceName : 'apimodels',
     resource_documentation: 'https://apimodels.app/docs/mcp',
-  }
+  })
 
   // token → valid-until / invalid-until. Keyed by hash so raw keys are not kept around as map keys.
   const seen = new Map<string, { ok: boolean; until: number }>()
@@ -94,9 +101,9 @@ export async function serve(deps: ServeDeps, port: number): Promise<void> {
     return ok
   }
 
-  const unauthorized = (res: ServerResponse, invalid: boolean) =>
+  const unauthorized = (res: ServerResponse, invalid: boolean, profile?: Profile) =>
     sendJson(res, 401, { error: invalid ? 'invalid_token' : 'unauthorized', error_description: invalid ? 'The access token is invalid or was revoked.' : 'Sign in to apimodels to use this server.' }, {
-      'WWW-Authenticate': `Bearer${invalid ? ' error="invalid_token",' : ''} resource_metadata="${resourceMetadataUrl}"`,
+      'WWW-Authenticate': `Bearer${invalid ? ' error="invalid_token",' : ''} resource_metadata="${resourceMetadataUrlOf(profile)}"`,
     })
 
   const server = createServer(async (req, res) => {
@@ -106,7 +113,11 @@ export async function serve(deps: ServeDeps, port: number): Promise<void> {
       if (req.method === 'OPTIONS') { res.writeHead(204, CORS).end(); return }
       if (path === '/healthz') { sendJson(res, 200, { ok: true }); return }
       if (path === '/.well-known/oauth-protected-resource' || path === '/.well-known/oauth-protected-resource/mcp') {
-        sendJson(res, 200, metadata, { 'Cache-Control': 'public, max-age=3600' }); return
+        sendJson(res, 200, metadataOf(), { 'Cache-Control': 'public, max-age=3600' }); return
+      }
+      const wk = /^\/\.well-known\/oauth-protected-resource\/mcp\/([a-z]+)\/?$/.exec(path)
+      if (wk && isProfile(wk[1])) {
+        sendJson(res, 200, metadataOf(wk[1]), { 'Cache-Control': 'public, max-age=3600' }); return
       }
 
       if (path.startsWith('/upload/')) {
@@ -124,7 +135,9 @@ export async function serve(deps: ServeDeps, port: number): Promise<void> {
         return
       }
 
-      if (path === '/mcp' || path === '/mcp/') {
+      const pm = /^\/mcp(?:\/([a-z]+))?\/?$/.exec(path)
+      const profile = pm?.[1] && isProfile(pm[1]) ? pm[1] : undefined
+      if (pm && (!pm[1] || profile)) {
         if (req.method !== 'POST') {
           // Stateless server: no standalone SSE stream (GET) and no sessions to end (DELETE).
           sendJson(res, 405, { jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed. POST JSON-RPC to this endpoint.' }, id: null }, { Allow: 'POST' })
@@ -132,15 +145,15 @@ export async function serve(deps: ServeDeps, port: number): Promise<void> {
         }
         const auth = String(req.headers.authorization || '')
         const token = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim()
-        if (!token) { unauthorized(res, false); return }
-        if (!(await tokenOk(token))) { unauthorized(res, true); return }
+        if (!token) { unauthorized(res, false, profile); return }
+        if (!(await tokenOk(token))) { unauthorized(res, true, profile); return }
         const raw = await readBody(req, MAX_JSON_BYTES)
         if (!raw) { sendJson(res, 413, { jsonrpc: '2.0', error: { code: -32000, message: 'Request too large.' }, id: null }); return }
         let body: unknown
         try { body = JSON.parse(raw.toString('utf8')) } catch {
           sendJson(res, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null }); return
         }
-        const mcp = deps.buildServer()
+        const mcp = profile ? deps.buildProfile(profile) : deps.buildServer()
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined })
         res.on('close', () => { transport.close().catch(() => {}); mcp.close().catch(() => {}) })
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
