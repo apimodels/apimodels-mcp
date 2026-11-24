@@ -172,16 +172,18 @@ function buildTranscribe(server: McpServer, h: ProfileHelpers) {
 // ── Profile: social ─────────────────────────────────────────────────────────────────────────────
 
 /** Keys that carry media files or the request headers needed to fetch them: never shown by this profile. */
-const MEDIA_KEYS = new Set(['resource_url', 'video_url', 'audio_url', 'download_url', 'variants', 'headers', 'preview_url', 'url_list', 'play_url', 'stream_url'])
+const MEDIA_KEYS = new Set(['variants', 'headers', 'url_list', 'urls', 'download_addr', 'play_addr'])
+/** Any *_url / *Url key that points at a file or a proxy for one (media, preview, thumbnail, cover). */
+const MEDIA_URL_KEY = /(resource|video|audio|download|preview|proxy|play|stream|thumbnail|thumb|cover|image|poster|avatar)_?url$/i
 
 /** Drop media links recursively; keep captions, authors, post URLs and counts. */
-function withoutMedia(v: unknown, depth = 0): unknown {
+export function withoutMedia(v: unknown, depth = 0): unknown {
   if (depth > 8 || v == null) return v
   if (Array.isArray(v)) return v.map((x) => withoutMedia(x, depth + 1))
   if (typeof v === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
-      if (MEDIA_KEYS.has(k)) continue
+      if (MEDIA_KEYS.has(k) || MEDIA_URL_KEY.test(k)) continue
       out[k] = withoutMedia(x, depth + 1)
     }
     return out
@@ -196,7 +198,8 @@ function postSummary(d: any): string {
   const lines = [
     `Site: ${d?.site ?? 'unknown'}`,
     ...(d?.post_url ? [`Post: ${d.post_url}`] : []),
-    ...(d?.author ? [`Author: ${typeof d.author === 'string' ? d.author : JSON.stringify(withoutMedia(d.author))}`] : []),
+    ...(d?.author ? [`Author: ${typeof d.author === 'string' ? d.author : [d.author.display_name ?? d.author.nickname ?? d.author.name, d.author.username ? `(@${d.author.username})` : ''].filter(Boolean).join(' ') || JSON.stringify(withoutMedia(d.author))}`] : []),
+    ...(Number(d?.duration) > 0 ? [`Duration: ${Math.round(Number(d.duration))} s`] : []),
     ...(d?.stats ? [`Stats: ${JSON.stringify(d.stats)}`] : []),
     `Media in the post: ${medias.length ? Object.entries(counts).map(([t, n]) => `${n} ${t}`).join(', ') : 'none'}`,
     '',
@@ -221,14 +224,31 @@ function speechSource(d: any): string | null {
   return null
 }
 
-/** Subtitle file → plain text (SRT / VTT / json3 / json). */
-function subtitleToText(body: string, hint: string): string {
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
+/** &#39; &amp;#39; &quot; … → characters (subtitle files are often double-escaped). */
+function decodeEntities(s: string): string {
+  let out = s
+  for (let i = 0; i < 2; i++) {
+    out = out.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+      if (e[0] === '#') { const n = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isFinite(n) ? String.fromCodePoint(n) : m }
+      return ENTITIES[e.toLowerCase()] ?? m
+    })
+  }
+  return out
+}
+
+/** Subtitle file → plain text, one cue per line (json3 / VTT / SRT). */
+export function subtitleToText(body: string, hint: string): string {
+  return decodeEntities(subtitleToRawText(body, hint))
+}
+
+function subtitleToRawText(body: string, hint: string): string {
   const trimmed = body.trim()
   if (hint.includes('json') || trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try {
       const j = JSON.parse(trimmed)
       const events: any[] = Array.isArray(j?.events) ? j.events : Array.isArray(j?.body) ? j.body : Array.isArray(j) ? j : []
-      const parts = events.map((e) => (Array.isArray(e?.segs) ? e.segs.map((s: any) => s?.utf8 ?? '').join('') : e?.content ?? e?.text ?? '')).map((s: string) => s.replace(/\s+/g, ' ').trim()).filter(Boolean)
+      const parts = events.map((e) => (Array.isArray(e?.segs) ? e.segs.map((s: any) => s?.utf8 ?? '').join('') : e?.content ?? e?.text ?? '')).map((s: string) => String(s).replace(/\s+/g, ' ').trim()).filter(Boolean)
       if (parts.length) return parts.join('\n')
     } catch { /* fall through to line parsing */ }
   }
@@ -237,7 +257,27 @@ function subtitleToText(body: string, hint: string): string {
     .filter((l) => l.trim() && !/^\d+$/.test(l.trim()) && !/-->/.test(l) && !/^WEBVTT/.test(l) && !/^(NOTE|STYLE|Kind:|Language:)/.test(l))
     .map((l) => l.replace(/<[^>]+>/g, '').trim())
     .filter((l, i, a) => l && l !== a[i - 1])
-    .join('\n')
+    .join(' ')
+    .replace(/\s+/g, ' ')
+}
+
+/** The text of a video's published subtitles (YouTube / Bilibili), or null when it has none. $0.004. */
+async function publishedSubtitles(h: ProfileHelpers, url: string, language?: string): Promise<{ text: string; language: string } | null> {
+  const res = await h.apiFetch('/media/subtitles', { method: 'POST', body: JSON.stringify({ url }) })
+  const d = res?.data ?? res
+  const tracks: any[] = Array.isArray(d?.subtitles) ? d.subtitles : []
+  if (!tracks.length) return null
+  const tag = (t: any) => String(t?.language_tag ?? t?.language_code ?? t?.lang ?? t?.language ?? '')
+  const pick = (language && tracks.find((t) => tag(t).toLowerCase().startsWith(language.toLowerCase()))) || tracks[0]
+  const files: any[] = Array.isArray(pick?.urls) ? pick.urls : Array.isArray(pick?.formats) ? pick.formats : [pick]
+  const fmtOf = (f: any) => String(f?.format ?? f?.ext ?? '').toLowerCase()
+  const usable = files.filter((f) => typeof (f?.url ?? f?.download_url) === 'string')
+  const file = ['json3', 'vtt', 'srt', 'json'].map((fmt) => usable.find((f) => fmtOf(f) === fmt)).find(Boolean)
+  if (!file) return null
+  const r = await fetch(file.url ?? file.download_url, { signal: AbortSignal.timeout(30_000) })
+  if (!r.ok) return null
+  const body = subtitleToText(await r.text(), fmtOf(file))
+  return body ? { text: body, language: String(pick?.language_name ?? '') || tag(pick) || 'unknown' } : null
 }
 
 function buildSocial(server: McpServer, h: ProfileHelpers) {
@@ -286,21 +326,23 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
         const d = res?.data ?? res
         const tracks: any[] = Array.isArray(d?.subtitles) ? d.subtitles : []
         if (!tracks.length) return text(`${d?.title ? `Video: ${d.title}\n` : ''}No subtitles are published for this video.`)
-        const langOf = (t: any) => String(t?.language_code ?? t?.lang ?? t?.language ?? '')
+        const langOf = (t: any) => String(t?.language_tag ?? t?.language_code ?? t?.lang ?? t?.language ?? '')
+        const langName = (t: any) => String(t?.language_name ?? '') || langOf(t)
         const pick = (language && tracks.find((t) => langOf(t).toLowerCase().startsWith(language.toLowerCase()))) || tracks[0]
         const files: any[] = Array.isArray(pick?.urls) ? pick.urls : Array.isArray(pick?.formats) ? pick.formats : [pick]
-        const order = ['json3', 'vtt', 'srt', 'json']
-        const file = [...files].sort((a, b) => order.indexOf(String(a?.format ?? a?.ext ?? '')) - order.indexOf(String(b?.format ?? b?.ext ?? ''))).find((f) => typeof (f?.url ?? f?.download_url) === 'string')
+        const fmtOf = (f: any) => String(f?.format ?? f?.ext ?? '').toLowerCase()
+        const usable = files.filter((f) => typeof (f?.url ?? f?.download_url) === 'string')
+        const file = ['json3', 'vtt', 'srt', 'json'].map((fmt) => usable.find((f) => fmtOf(f) === fmt)).find(Boolean)
         const fileUrl: string | undefined = file?.url ?? file?.download_url
         let body = ''
         if (fileUrl) {
           const r = await fetch(fileUrl, { signal: AbortSignal.timeout(30_000) })
           if (r.ok) body = subtitleToText(await r.text(), String(file?.format ?? file?.ext ?? fileUrl))
         }
-        const langs = tracks.map(langOf).filter(Boolean)
+        const langs = tracks.map((t) => `${langName(t)} (${langOf(t)})`)
         return text([
           ...(d?.title ? [`Video: ${d.title}`] : []),
-          `Subtitle languages: ${langs.join(', ') || 'unknown'}; shown: ${langOf(pick) || 'first track'}`,
+          `Subtitle languages: ${langs.join(', ') || 'unknown'}; shown: ${langName(pick) || 'first track'}`,
           '',
           body || '(The subtitle file could not be read.)',
         ].join('\n'))
@@ -310,7 +352,7 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
 
   server.tool(
     'transcribe_post',
-    `Reads one public social-media video post (${sites}) and transcribes the speech in its video into text. Returns the caption, author and engagement counts with the full transcript; options as for a transcription (word timestamps with speakers, or translation). No media links are returned. Videos that are not finished within wait_seconds return a job id. Cost: $0.004 to read the post plus ${TRANSCRIBE_PRICE}, charged to the signed-in apimodels.app balance; failed steps are not charged. Some sites serve media only to their own app, in which case the transcription fails and is not charged.`,
+    `Reads one public social-media video post (${sites}) and returns the caption, author and engagement counts with the full text of what is said in the video. For YouTube and Bilibili the video's published subtitles are used when it has them; for other sites the speech is transcribed; options as for a transcription (word timestamps with speakers, or translation). No media links are returned. Videos that are not finished within wait_seconds return a job id. Cost: $0.004 to read the post, plus $0.004 for published subtitles or ${TRANSCRIBE_PRICE} for transcription, charged to the signed-in apimodels.app balance; failed steps are not charged. Some sites serve media only to their own app; those videos cannot be transcribed and nothing is charged for the attempt.`,
     {
       url: z.string().url().describe('URL of the public video post.'),
       timestamps: z.boolean().optional().describe('Include word-level start and end times and speaker labels in the JSON result. Cannot be combined with translate_to.'),
@@ -324,11 +366,27 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
         const res = await h.apiFetch('/media/extract', { method: 'POST', body: JSON.stringify({ url }) })
         const d = res?.data ?? res
         const head = postSummary(d)
+        const site = String(d?.site ?? '').toLowerCase()
+        // YouTube and Bilibili serve their media only to their own players, so their audio cannot be fetched
+        // for transcription. Their published subtitles are used instead (no extra media access involved).
+        const triedSubs = /youtube|bilibili/.test(site) && !timestamps && !translate_to
+        if (triedSubs) {
+          const sub = await publishedSubtitles(h, url)
+          if (sub) return text(`${head}\n\nTRANSCRIPT — from the video's published subtitles (${sub.language}); no speech-to-text was run and no transcription was charged.\n\n${sub.text}`)
+        }
         const src = speechSource(d)
         if (!src) return text(`${head}\n\nThis post has no video or audio to transcribe.`)
-        const { taskId, state } = await transcribeUrl(h, src, { timestamps, translate_to }, wait_seconds)
-        const body = transcriptResult(h, taskId, state)
-        return { ...body, content: [{ type: 'text' as const, text: `${head}\n\n${body.content[0].text}` }] }
+        try {
+          const { taskId, state } = await transcribeUrl(h, src, { timestamps, translate_to }, wait_seconds)
+          const body = transcriptResult(h, taskId, state)
+          return { ...body, content: [{ type: 'text' as const, text: `${head}\n\n${body.content[0].text}` }] }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          if (/audio duration|must be an audio file|publicly reachable|HTTP 4\d\d/i.test(msg)) {
+            return { ...text(`${head}\n\nNO TRANSCRIPT — ${site || 'this site'} does not let this video be fetched for transcription (it serves the media only to its own app). Nothing was charged for the transcription. ${triedSubs ? 'This video has no published subtitles either.' : ''}`.trim()), isError: true }
+          }
+          throw e
+        }
       } catch (e) { return fail(e) }
     },
   )
