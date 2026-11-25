@@ -1,6 +1,6 @@
-# apimodels Social Video Insights — connector guide
+# Transcripts for YouTube, TikTok & Instagram — MCP connector for Claude
 
-apimodels Social Video Insights is a remote MCP connector that reads public social-media posts and turns what is said in their videos into text. It is one of three single-purpose connectors run by [apimodels.app](https://apimodels.app), a multi-model AI API platform operated by Pixlume. Use it to research content: read a post's caption, author and engagement counts, list a channel's recent posts, pull a video's subtitles, or get a transcript of a short video so Claude can summarize or compare it.
+Transcripts for YouTube, TikTok & Instagram is a remote MCP connector that gets the transcript, captions and post text of public social-media videos: YouTube transcripts from published captions, TikTok, Instagram Reel, X and Facebook transcripts by speech-to-text, plus Xiaohongshu (RedNote), Douyin, Bilibili and Weibo. It is one of three single-purpose connectors run by [apimodels.app](https://apimodels.app), a multi-model AI API platform operated by Pixlume. Use it to research content: read a post's caption, author and engagement counts, list a channel's recent posts, pull a video's subtitles, or get a transcript of a short video so Claude can summarize or compare it.
 
 It never returns media download links and does not download videos for you: the output is text and numbers only. It does not generate any media.
 

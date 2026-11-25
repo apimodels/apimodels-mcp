@@ -83,8 +83,8 @@ Three smaller connectors run on the same server, each with only the tools for on
 
 | Connector | URL | What it does | Guide |
 |---|---|---|---|
-| apimodels Transcribe | `https://api.apimodels.app/mcp/transcribe` | Speech to text for audio and video files, with timestamps, speakers or translation | [docs/connectors/transcribe.md](docs/connectors/transcribe.md) |
-| apimodels Social Video Insights | `https://api.apimodels.app/mcp/social` | Read public posts, list a channel's posts, get subtitles and video transcripts; text only, no media links | [docs/connectors/social-video.md](docs/connectors/social-video.md) |
+| Audio & Video Transcription (speech to text) | `https://api.apimodels.app/mcp/transcribe` | Transcribe audio and video files to text, with timestamps, speakers or translation | [docs/connectors/transcribe.md](docs/connectors/transcribe.md) |
+| Transcripts for YouTube, TikTok & Instagram | `https://api.apimodels.app/mcp/social` | YouTube, TikTok, Instagram, X and Facebook video transcripts, captions, post text and channel lists; text only, no media links | [docs/connectors/social-video.md](docs/connectors/social-video.md) |
 | apimodels Design Assets | `https://api.apimodels.app/mcp/design` | Logos, icons, slide visuals and UI mockups | [docs/connectors/design.md](docs/connectors/design.md) |
 
 ## Tools

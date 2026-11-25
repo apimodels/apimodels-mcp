@@ -1,6 +1,6 @@
-# apimodels Transcribe — connector guide
+# Audio & Video Transcription (Speech to Text) — MCP connector for Claude
 
-apimodels Transcribe is a remote MCP connector that turns speech in audio and video files into text. It is one of three single-purpose connectors run by [apimodels.app](https://apimodels.app), a multi-model AI API platform operated by Pixlume. Use it when you have a recording (an interview, a meeting, a podcast episode, a lecture, a voice memo) and want the words as text, with optional timestamps and speaker labels.
+Audio & Video Transcription is a remote MCP connector that transcribes audio and video to text (speech to text) inside Claude: meetings, interviews, podcasts, lectures and voice memos. It is one of three single-purpose connectors run by [apimodels.app](https://apimodels.app), a multi-model AI API platform operated by Pixlume. Use it when you have a recording (an interview, a meeting, a podcast episode, a lecture, a voice memo) and want the words as text, with optional timestamps and speaker labels.
 
 It does not generate audio, images or video, and it does not transcribe live audio: it works on whole files.
 
