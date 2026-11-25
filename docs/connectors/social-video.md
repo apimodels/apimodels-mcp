@@ -42,14 +42,14 @@ The paid tools are marked "not read-only" because each call spends balance; none
 - Public content only. The connector does not sign in to social sites on your behalf.
 - Some sites serve video only to their own app. Those videos cannot be transcribed; the tool says so and charges nothing for the attempt.
 - YouTube and Bilibili videos without published subtitles cannot be transcribed through this connector.
-- Engagement counts are whatever the site shows publicly at the time of the call; some sites hide some counts.
+- Engagement counts are whatever the site shows publicly at the time of the call; some sites hide some counts. Channel listings on some sites (YouTube among them) give each post's id, title, duration and age but no counts; read a single post for its counts.
 - A transcription waits up to 50 seconds; longer videos return a job id, and the result stays available for 30 days.
 
 ## Example prompts
 
 1. "Read this TikTok and tell me what the creator says and how the post is performing: https://www.tiktok.com/@scout2015/video/6718335390845095173"
-2. "Get the English subtitles of https://www.youtube.com/watch?v=jNQXAC9IVRw and summarize the video in three bullet points."
-3. "List the latest posts on https://www.youtube.com/@NASA, then compare the titles and view counts of the top five."
+2. "Get the English subtitles of https://www.youtube.com/watch?v=jNQXAC9IVRw and summarize the video in one sentence."
+3. "List the latest videos on https://www.youtube.com/@NASA and group their titles by topic."
 
 ## Data handling
 
