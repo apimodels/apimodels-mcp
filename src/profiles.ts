@@ -27,9 +27,9 @@ export type Profile = (typeof PROFILES)[number]
 export const isProfile = (s: string): s is Profile => (PROFILES as readonly string[]).includes(s)
 
 export const PROFILE_INFO: Record<Profile, { serverName: string; resourceName: string }> = {
-  transcribe: { serverName: 'apimodels-transcribe', resourceName: 'apimodels Transcribe' },
-  social: { serverName: 'apimodels-social-video', resourceName: 'apimodels Social Video Insights' },
-  design: { serverName: 'apimodels-design', resourceName: 'apimodels Design Assets' },
+  transcribe: { serverName: 'apimodels-transcribe', resourceName: 'Audio & Video Transcription (apimodels)' },
+  social: { serverName: 'apimodels-social-video', resourceName: 'Transcripts for YouTube, TikTok & Instagram (apimodels)' },
+  design: { serverName: 'apimodels-design', resourceName: 'Design Assets (apimodels)' },
 }
 
 type Kind = 'images' | 'video' | 'audio'
