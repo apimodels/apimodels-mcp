@@ -29,9 +29,9 @@ YouTube, TikTok, Instagram, X, Facebook, Xiaohongshu, Bilibili, Douyin, Weibo an
 | Tool | What it does | Cost | Annotations |
 |---|---|---|---|
 | `read_post` | Reads one public post or video page: caption or title, site, post URL, author, engagement counts when the site provides them, and how many images or videos it contains. | $0.004 | not read-only, not destructive |
-| `list_posts` | Lists posts from a public profile, channel, playlist or topic page, one page at a time, with a cursor for the next page. | $0.02 per page | not read-only, not destructive |
+| `list_posts` | Lists posts from a public profile, channel, playlist or topic page, one page at a time: title or caption, page link, length, age and counts when the site lists them, with a cursor for the next page. | $0.02 per page | not read-only, not destructive |
 | `get_subtitles` | Returns the published subtitles of a YouTube or Bilibili video as plain text, with the list of available languages. | $0.004 | not read-only, not destructive |
-| `transcribe_post` | Reads a video post and returns its caption, author and counts with the full text of what is said. YouTube and Bilibili use the video's published subtitles when it has them; other sites are transcribed (optional word timestamps with speakers, or translation). | $0.004 + $0.004 (subtitles) or $0.0025 / audio minute (transcription) | not read-only, not destructive |
+| `transcribe_post` | Reads a video post and returns its caption, author and counts with the full text of what is said. YouTube and Bilibili use the video's published subtitles when it has them; other sites are transcribed (optional time-coded lines by speaker, or translation). | $0.004 + $0.004 (subtitles) or $0.0025 / audio minute (transcription) | not read-only, not destructive |
 | `get_transcription` | Returns the result of a transcription that was still running, by its job id. | free | read-only |
 | `get_balance` | Returns the account's available balance and the amount held for running jobs. | free | read-only |
 

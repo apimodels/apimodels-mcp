@@ -104,10 +104,81 @@ async function transcribeUrl(h: ProfileHelpers, url: string, opts: { timestamps?
   return h.submitAndWait('audio', body, waitS)
 }
 
-function transcriptResult(h: ProfileHelpers, jobId: string, s: TaskState) {
+/** 83.4 → "01:23"; 3725 → "1:02:05". */
+function clock(seconds: number): string {
+  const t = Math.max(0, Math.floor(seconds))
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60
+  const mm = String(m).padStart(2, '0'), ss = String(s).padStart(2, '0')
+  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`
+}
+
+const CJK = /[぀-ヿ㐀-鿿豈-﫿]/
+/** Words → text: spaces between words, none between two CJK characters. */
+function joinWords(words: string[]): string {
+  return words.reduce((out, w) => (!out ? w : CJK.test(out.slice(-1)) && CJK.test(w[0]) ? out + w : `${out} ${w}`), '')
+}
+
+const TIMED_MAX_CHARS = 60_000
+
+/**
+ * A timestamped job's JSON → time-coded lines, one per speaker turn (split at sentence ends after ~8 s and
+ * at the latest every 30 s): "[00:00–00:07] Speaker 1: …". Null when the result has no word timings.
+ */
+export function timedLines(result: any): string | null {
+  const words: any[] = Array.isArray(result?.words) ? result.words : []
+  if (!words.length) return null
+  const hasSpeaker = words.some((w) => w?.speaker != null && String(w.speaker) !== '')
+  const lines: string[] = []
+  let cur: { spk: string; start: number; end: number; words: string[] } | null = null
+  const flush = () => {
+    if (cur?.words.length) {
+      const n = Number(cur.spk)
+      const who = hasSpeaker ? ` Speaker ${Number.isFinite(n) ? n + 1 : cur.spk}:` : ''
+      lines.push(`[${clock(cur.start)}–${clock(cur.end)}]${who} ${joinWords(cur.words)}`)
+    }
+    cur = null
+  }
+  for (const w of words) {
+    const word = String(w?.word ?? '').trim()
+    const start = Number(w?.start), end = Number(w?.end)
+    if (!word || !Number.isFinite(start)) continue
+    const spk = String(w?.speaker ?? '')
+    if (cur && (spk !== cur.spk || start - cur.start > 30)) flush()
+    if (!cur) cur = { spk, start, end: Number.isFinite(end) ? end : start, words: [] }
+    cur.words.push(word)
+    if (Number.isFinite(end)) cur.end = end
+    if (/[.?!。？！]$/.test(word) && cur.end - cur.start >= 8) flush()
+  }
+  flush()
+  if (!lines.length) return null
+  let out = ''
+  for (const l of lines) {
+    if (out.length + l.length > TIMED_MAX_CHARS) return `${out}\n… (cut here to keep the reply short; the complete timed transcript is in the JSON at transcript_url)`
+    out += (out ? '\n' : '') + l
+  }
+  return out
+}
+
+/** For a finished transcription that ran with timestamps, its time-coded lines; otherwise null. */
+async function timedTranscript(t: Transcript): Promise<string | null> {
+  if (t.task !== 'transcribe' || !t.transcriptUrl) return null
+  try {
+    const r = await fetch(t.transcriptUrl, { signal: AbortSignal.timeout(15_000) })
+    if (!r.ok) return null
+    return timedLines(await r.json())
+  } catch {
+    return null
+  }
+}
+
+async function transcriptResult(h: ProfileHelpers, jobId: string, s: TaskState) {
   if (s.state !== 'completed') return { ...text(statusText(jobId, s, 'transcription')), ...(s.state === 'failed' ? { isError: true } : {}) }
   if (!s.transcript) return text(`Job ${jobId} finished. Result: ${s.urls.join('\n')}`)
-  return text(h.transcriptText(s.transcript))
+  const timed = await timedTranscript(s.transcript)
+  if (!timed) return text(h.transcriptText(s.transcript))
+  // Header (task, duration, JSON link, notices) without the plain text, then the time-coded lines in its place.
+  const header = h.transcriptText({ ...s.transcript, text: '' }).replace(/\n*\(no text\)\s*$/, '')
+  return text(`${header}\n\nTIME-CODED TRANSCRIPT${/Speaker \d/.test(timed) ? ' (speaker numbers are assigned in order of first appearance)' : ''}:\n${timed}`)
 }
 
 function getTranscriptionTool(server: McpServer, h: ProfileHelpers) {
@@ -122,7 +193,7 @@ function getTranscriptionTool(server: McpServer, h: ProfileHelpers) {
     async ({ job_id, wait_seconds }) => {
       try {
         const id = job_id.trim()
-        return transcriptResult(h, id, await h.pollTask('audio', id, wait_seconds))
+        return await transcriptResult(h, id, await h.pollTask('audio', id, wait_seconds))
       } catch (e) { return fail(e) }
     },
   )
@@ -133,10 +204,10 @@ function getTranscriptionTool(server: McpServer, h: ProfileHelpers) {
 function buildTranscribe(server: McpServer, h: ProfileHelpers) {
   server.tool(
     'transcribe',
-    `Transcribes the speech in an audio file, or in the audio track of a video file, into text (model: nemotron-3.5-transcribe). Input: a public HTTPS URL that downloads the file directly; mp3, wav, m4a, aac, flac, ogg, opus, webm, mp4 or mov, up to 60 minutes and 200 MB. Options: word-level timestamps with speaker labels (up to 8 speakers), or translation of the speech into another language instead of a transcript. Output: the transcript text, the audio duration and a link to the full result as JSON, kept for 30 days. Long recordings that are not finished within wait_seconds return a job id. Cost: ${TRANSCRIBE_PRICE}, charged to the signed-in apimodels.app balance; failed jobs and files whose length cannot be read are not charged. Whole-file transcription only, not live audio.`,
+    `Transcribes the speech in an audio file, or in the audio track of a video file, into text (model: nemotron-3.5-transcribe). Input: a public HTTPS URL that downloads the file directly; mp3, wav, m4a, aac, flac, ogg, opus, webm, mp4 or mov, up to 60 minutes and 200 MB. Options: timestamps (the transcript comes back as time-coded lines labelled by speaker, up to 8 speakers, and the JSON result adds word-level start and end times), or translation of the speech into another language instead of a transcript. Output: the transcript text, the audio duration and a link to the full result as JSON, kept for 30 days. Long recordings that are not finished within wait_seconds return a job id. Cost: ${TRANSCRIBE_PRICE}, charged to the signed-in apimodels.app balance; failed jobs and files whose length cannot be read are not charged. Whole-file transcription only, not live audio.`,
     {
       url: z.string().url().describe('Public HTTPS URL of the audio or video file.'),
-      timestamps: z.boolean().optional().describe('Include word-level start and end times and speaker labels in the JSON result. Cannot be combined with translate_to.'),
+      timestamps: z.boolean().optional().describe('Return the transcript as time-coded lines labelled by speaker; the JSON result also gets word-level start and end times. Cannot be combined with translate_to.'),
       translate_to: z.enum(LANGS).optional().describe('Translate the speech into this language (ISO 639-1 code) instead of transcribing it. Translation to or from English is the supported case.'),
       wait_seconds: waitParam(h, 'transcript'),
     },
@@ -144,7 +215,7 @@ function buildTranscribe(server: McpServer, h: ProfileHelpers) {
     async ({ url, timestamps, translate_to, wait_seconds }) => {
       try {
         const { taskId, state } = await transcribeUrl(h, url, { timestamps, translate_to }, wait_seconds)
-        return transcriptResult(h, taskId, state)
+        return await transcriptResult(h, taskId, state)
       } catch (e) { return fail(e) }
     },
   )
@@ -205,6 +276,87 @@ function postSummary(d: any): string {
     '',
     `Caption / title:\n${String(d?.text ?? d?.title ?? '(none)').trim() || '(none)'}`,
   ]
+  return lines.join('\n')
+}
+
+/** Hosts whose links are post / video pages (never media files or CDNs). */
+const PAGE_HOST = /(^|\.)(youtube\.com|youtu\.be|tiktok\.com|instagram\.com|x\.com|twitter\.com|facebook\.com|fb\.watch|xiaohongshu\.com|xhslink\.com|bilibili\.com|b23\.tv|douyin\.com|weibo\.com|weibo\.cn|vimeo\.com|reddit\.com|threads\.net|kuaishou\.com|pinterest\.com|linkedin\.com|twitch\.tv|dailymotion\.com|snapchat\.com)$/i
+const MEDIA_FILE = /\.(mp4|m4a|m3u8|mpd|mp3|aac|webm|mov|jpe?g|png|webp|gif|heic|avif)$/i
+
+function pageLink(u: unknown): string | null {
+  if (typeof u !== 'string') return null
+  try {
+    const x = new URL(u)
+    return x.protocol === 'https:' && PAGE_HOST.test(x.hostname) && !MEDIA_FILE.test(x.pathname) ? x.toString() : null
+  } catch {
+    return null
+  }
+}
+
+/** The page link of one listed post: a page URL the site gave, or one built from the video id (YouTube, Bilibili). */
+export function postLink(p: any, site: string): string | null {
+  for (const k of ['post_url', 'share_url', 'web_url', 'permalink', 'link', 'url']) {
+    const l = pageLink(p?.[k])
+    if (l) return l
+  }
+  const id = typeof p?.id === 'string' || typeof p?.id === 'number' ? String(p.id) : ''
+  if (/youtube/i.test(site) && /^[\w-]{11}$/.test(id)) return `https://www.youtube.com/watch?v=${id}`
+  if (/bilibili/i.test(site) && /^BV\w{10}$/.test(id)) return `https://www.bilibili.com/video/${id}`
+  return null
+}
+
+const COUNT_NAMES: Record<string, string> = { digg: 'likes', like: 'likes', play: 'plays', view: 'views', comment: 'comments', share: 'shares', collect: 'saves', favorite: 'saves' }
+
+function countsLine(stats: unknown): string {
+  if (!stats || typeof stats !== 'object') return ''
+  return Object.entries(stats as Record<string, unknown>)
+    .filter(([, v]) => typeof v === 'number' || (typeof v === 'string' && v.trim()))
+    .map(([k, v]) => {
+      const base = k.replace(/_count$/, '')
+      return `${COUNT_NAMES[base] ?? base.replace(/_/g, ' ')} ${v}`
+    })
+    .join(', ')
+}
+
+function whenLine(v: unknown): string {
+  if (typeof v === 'number' && v > 1e9) return new Date(v > 1e12 ? v : v * 1000).toISOString().slice(0, 10)
+  return typeof v === 'string' ? v.trim() : ''
+}
+
+function authorLine(a: unknown): string {
+  if (!a) return ''
+  if (typeof a === 'string') return a
+  const o = a as Record<string, unknown>
+  const name = o.display_name ?? o.nickname ?? o.name
+  const handle = o.username ? `${String(o.username).startsWith('@') ? '' : '@'}${o.username}` : ''
+  return name ? [name, handle ? `(${handle})` : ''].filter(Boolean).join(' ') : handle
+}
+
+/** One page of a profile / channel listing as numbered lines: title, page link, length, age, counts. No media links. */
+export function postListText(raw: unknown): string {
+  const d = withoutMedia(raw) as any
+  const site = String(d?.site ?? '')
+  const posts: any[] = Array.isArray(d?.posts) ? d.posts : []
+  const profile = authorLine(d?.profile)
+  const more = d?.has_more && d?.next_cursor ? ` More posts are available; next_cursor: ${d.next_cursor}` : ' No further pages.'
+  const lines = [`Site: ${site || 'unknown'}${profile ? ` · Profile: ${profile}` : ''}`, `${posts.length} post${posts.length === 1 ? '' : 's'} on this page.${posts.length ? more : ''}`, '']
+  posts.forEach((p, i) => {
+    const title = String(p?.title ?? p?.text ?? p?.desc ?? '').replace(/\s+/g, ' ').trim()
+    const medias: any[] = Array.isArray(p?.medias) ? p.medias : []
+    const dur = Number(p?.duration ?? medias.find((m) => Number(m?.duration) > 0)?.duration)
+    const meta = [
+      authorLine(p?.author),
+      dur > 0 ? (dur < 60 ? `${Math.round(dur)} s` : `${Math.floor(dur / 60)} min ${Math.round(dur % 60)} s`) : '',
+      whenLine(p?.created_at ?? p?.published_at ?? p?.create_time),
+      countsLine(p?.stats),
+    ].filter(Boolean)
+    const link = postLink(p, site)
+    lines.push(`${i + 1}. ${title ? (title.length > 300 ? `${title.slice(0, 300)}…` : title) : '(no title)'}`)
+    if (link) lines.push(`   ${link}`)
+    else if (p?.id != null) lines.push(`   id: ${p.id}`)
+    if (meta.length) lines.push(`   ${meta.join(' · ')}`)
+  })
+  if (!posts.length) lines.push('No posts were found on this page.')
   return lines.join('\n')
 }
 
@@ -298,7 +450,7 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
 
   server.tool(
     'list_posts',
-    `Lists posts from a public profile, channel, playlist or topic page (${sites}), one page at a time: each post's URL, title or caption and engagement counts when available, plus a cursor for the next page. No media links are returned. Cost: $0.02 per page, charged to the signed-in apimodels.app balance; failed lookups are not charged.`,
+    `Lists posts from a public profile, channel, playlist or topic page (${sites}), one page at a time: each post's title or caption, its page link (given by the site, or built from the video id for YouTube and Bilibili), its length and age, and engagement counts when the site lists them, plus a cursor for the next page. Some sites, YouTube among them, list no counts; reading a single post returns them. No media links are returned. Cost: $0.02 per page, charged to the signed-in apimodels.app balance; failed lookups are not charged.`,
     {
       url: z.string().url().describe('URL of the public profile, channel, playlist or topic page.'),
       cursor: z.string().optional().describe('The next_cursor value from the previous page, to get the page after it.'),
@@ -307,7 +459,7 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
     async ({ url, cursor }) => {
       try {
         const res = await h.apiFetch('/media/playlist', { method: 'POST', body: JSON.stringify({ url, ...(cursor ? { cursor } : {}) }) })
-        return text(JSON.stringify(withoutMedia(res?.data ?? res), null, 2))
+        return text(postListText(res?.data ?? res))
       } catch (e) { return fail(e) }
     },
   )
@@ -355,7 +507,7 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
     `Reads one public social-media video post (${sites}) and returns the caption, author and engagement counts with the full text of what is said in the video. For YouTube and Bilibili the video's published subtitles are used when it has them; for other sites the speech is transcribed; options as for a transcription (word timestamps with speakers, or translation). No media links are returned. Videos that are not finished within wait_seconds return a job id. Cost: $0.004 to read the post, plus $0.004 for published subtitles or ${TRANSCRIBE_PRICE} for transcription, charged to the signed-in apimodels.app balance; failed steps are not charged. Some sites serve media only to their own app; those videos cannot be transcribed and nothing is charged for the attempt.`,
     {
       url: z.string().url().describe('URL of the public video post.'),
-      timestamps: z.boolean().optional().describe('Include word-level start and end times and speaker labels in the JSON result. Cannot be combined with translate_to.'),
+      timestamps: z.boolean().optional().describe('Return the transcript as time-coded lines labelled by speaker; the JSON result also gets word-level start and end times. Cannot be combined with translate_to.'),
       translate_to: z.enum(LANGS).optional().describe('Translate the speech into this language (ISO 639-1 code) instead of transcribing it.'),
       wait_seconds: waitParam(h, 'transcript'),
     },
@@ -378,7 +530,7 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
         if (!src) return text(`${head}\n\nThis post has no video or audio to transcribe.`)
         try {
           const { taskId, state } = await transcribeUrl(h, src, { timestamps, translate_to }, wait_seconds)
-          const body = transcriptResult(h, taskId, state)
+          const body = await transcriptResult(h, taskId, state)
           return { ...body, content: [{ type: 'text' as const, text: `${head}\n\n${body.content[0].text}` }] }
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e)

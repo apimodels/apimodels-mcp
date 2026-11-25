@@ -1,6 +1,6 @@
 # apimodels Transcribe — connector guide
 
-apimodels Transcribe is a remote MCP connector that turns speech in audio and video files into text. It is one of three single-purpose connectors run by [apimodels.app](https://apimodels.app), a multi-model AI API platform operated by Pixlume. Use it when you have a recording (an interview, a meeting, a podcast episode, a lecture, a voice memo) and want the words as text, with optional word-level timestamps and speaker labels.
+apimodels Transcribe is a remote MCP connector that turns speech in audio and video files into text. It is one of three single-purpose connectors run by [apimodels.app](https://apimodels.app), a multi-model AI API platform operated by Pixlume. Use it when you have a recording (an interview, a meeting, a podcast episode, a lecture, a voice memo) and want the words as text, with optional timestamps and speaker labels.
 
 It does not generate audio, images or video, and it does not transcribe live audio: it works on whole files.
 
@@ -24,7 +24,7 @@ Transcription is paid from the account's prepaid USD balance. Check it with the 
 
 | Tool | What it does | Cost | Annotations |
 |---|---|---|---|
-| `transcribe` | Transcribes an audio or video file at a public HTTPS URL. Options: `timestamps` (word-level times and speaker labels, up to 8 speakers) or `translate_to` (translate the speech into another language instead of transcribing it). Returns the transcript, the audio duration and a link to the full JSON result. | $0.0025 / audio minute | not read-only, not destructive |
+| `transcribe` | Transcribes an audio or video file at a public HTTPS URL. Options: `timestamps` (the transcript comes back as time-coded lines labelled by speaker, up to 8 speakers; the JSON result adds word-level times) or `translate_to` (translate the speech into another language instead of transcribing it). Returns the transcript, the audio duration and a link to the full JSON result. | $0.0025 / audio minute | not read-only, not destructive |
 | `get_transcription` | Returns the result of a job that was still running when `transcribe` returned, by its job id. | free | read-only |
 | `get_upload_link` | Creates a one-time HTTPS upload link (valid 15 minutes, one file) for a file on your computer. The upload returns a public URL that `transcribe` can read. The link can only receive a file. | free | read-only |
 | `get_balance` | Returns the account's available balance and the amount held for running jobs. | free | read-only |
