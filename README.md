@@ -77,6 +77,16 @@ The same tools run at **`https://api.apimodels.app/mcp`** (Streamable HTTP). Not
 
 Differences from the local server: the hosted one cannot read files on your machine — the agent calls `get_upload_url`, uploads the file with `curl -T` and passes the returned URL instead (local paths are refused with that hint) — and each call waits at most 50 seconds before handing back a task id for `get_task`. Signed in with a plain API key instead? Send it as `Authorization: Bearer sk_…`.
 
+### Single-purpose connectors
+
+Three smaller connectors run on the same server, each with only the tools for one job and the same OAuth sign-in:
+
+| Connector | URL | What it does | Guide |
+|---|---|---|---|
+| apimodels Transcribe | `https://api.apimodels.app/mcp/transcribe` | Speech to text for audio and video files, with timestamps, speakers or translation | [docs/connectors/transcribe.md](docs/connectors/transcribe.md) |
+| apimodels Social Video Insights | `https://api.apimodels.app/mcp/social` | Read public posts, list a channel's posts, get subtitles and video transcripts; text only, no media links | [docs/connectors/social-video.md](docs/connectors/social-video.md) |
+| apimodels Design Assets | `https://api.apimodels.app/mcp/design` | Logos, icons, slide visuals and UI mockups | [docs/connectors/design.md](docs/connectors/design.md) |
+
 ## Tools
 
 | Tool | What it does |
