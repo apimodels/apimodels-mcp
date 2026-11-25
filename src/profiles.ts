@@ -48,6 +48,8 @@ export interface ProfileHelpers {
   transcriptText: (t: Transcript) => string
   imagePreview: (url: string) => Promise<{ data: string; mimeType: string } | null>
   uploadLink: (filename: string) => { url: string; ttlMinutes: number }
+  /** Set by buildProfileServer: which connector is answering (for the top-up link's campaign tag). */
+  profile?: Profile
 }
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const
@@ -59,7 +61,21 @@ const LANGS = [
 ] as const
 
 const text = (s: string) => ({ content: [{ type: 'text' as const, text: s }] })
-const fail = (e: unknown) => ({ content: [{ type: 'text' as const, text: `Error: ${e instanceof Error ? e.message : String(e)}` }], isError: true })
+
+/** Credits page, tagged with the connector so top-ups that start here can be told apart in analytics. */
+const topUpUrl = (profile?: Profile) =>
+  `https://apimodels.app/console/credits?utm_source=mcp_connector&utm_medium=mcp&utm_campaign=${profile ?? 'mcp'}`
+
+/** The API answers HTTP 402 (msg "Insufficient credits") when the balance cannot cover a request. */
+const isInsufficient = (msg: string) => /HTTP 402|insufficient (credits|balance)/i.test(msg)
+
+const fail = (e: unknown, profile?: Profile) => {
+  const msg = e instanceof Error ? e.message : String(e)
+  const out = isInsufficient(msg)
+    ? `INSUFFICIENT BALANCE — the signed-in apimodels.app account does not have enough prepaid balance for this request. Nothing was run and nothing was charged. Top up at ${topUpUrl(profile)}; the balance can be used as soon as the payment goes through.`
+    : `Error: ${msg}`
+  return { content: [{ type: 'text' as const, text: out }], isError: true }
+}
 
 /** Neutral status lines: what happened, never what to call next. */
 function statusText(jobId: string, s: TaskState, what: string): string {
@@ -79,8 +95,8 @@ function balanceTool(server: McpServer, h: ProfileHelpers) {
         const j = await h.apiFetch('/balance')
         const d = j?.data ?? j
         const n = (v: unknown) => Number(v ?? 0).toFixed(4)
-        return text(`Balance: ${n(d?.balance)} ${d?.currency ?? 'USD'} available, ${n(d?.frozen)} held for running jobs. Top up at https://apimodels.app/console/credits`)
-      } catch (e) { return fail(e) }
+        return text(`Balance: ${n(d?.balance)} ${d?.currency ?? 'USD'} available, ${n(d?.frozen)} held for running jobs. Top up at ${topUpUrl(h.profile)}`)
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 }
@@ -194,7 +210,7 @@ function getTranscriptionTool(server: McpServer, h: ProfileHelpers) {
       try {
         const id = job_id.trim()
         return await transcriptResult(h, id, await h.pollTask('audio', id, wait_seconds))
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 }
@@ -216,7 +232,7 @@ function buildTranscribe(server: McpServer, h: ProfileHelpers) {
       try {
         const { taskId, state } = await transcribeUrl(h, url, { timestamps, translate_to }, wait_seconds)
         return await transcriptResult(h, taskId, state)
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -233,7 +249,7 @@ function buildTranscribe(server: McpServer, h: ProfileHelpers) {
       try {
         const { url, ttlMinutes } = h.uploadLink(filename)
         return text(`Upload link (valid ${ttlMinutes} minutes, one file):\n${url}\n\nExample: curl -sS -T "<path to the file>" "${url}"\nThe upload responds with {"url": "https://…"}: the public URL of the file.`)
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -444,7 +460,7 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
       try {
         const res = await h.apiFetch('/media/extract', { method: 'POST', body: JSON.stringify({ url }) })
         return text(postSummary(res?.data ?? res))
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -460,7 +476,7 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
       try {
         const res = await h.apiFetch('/media/playlist', { method: 'POST', body: JSON.stringify({ url, ...(cursor ? { cursor } : {}) }) })
         return text(postListText(res?.data ?? res))
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -498,7 +514,7 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
           '',
           body || '(The subtitle file could not be read.)',
         ].join('\n'))
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -539,7 +555,7 @@ function buildSocial(server: McpServer, h: ProfileHelpers) {
           }
           throw e
         }
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -587,7 +603,7 @@ function buildDesign(server: McpServer, h: ProfileHelpers) {
         const what = { symbol_and_wordmark: `a symbol next to the wordmark "${name}"`, wordmark: `a wordmark that spells "${name}"`, symbol: `a symbol for "${name}" with no text` }[layout]
         const prompt = `Logo design: ${what}. ${brief} Centered, generous margins, plain background, crisp edges, suitable for small sizes. ${DESIGN_GUARD}`
         return await run(format === 'svg' ? { prompt, output_format: 'svg' } : { prompt, size: '1024x1024', quality: 'medium', output_format: 'png' }, wait_seconds, return_preview)
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -608,7 +624,7 @@ function buildDesign(server: McpServer, h: ProfileHelpers) {
         const look = { outline: 'thin consistent outline strokes, no fill', filled: 'solid filled shapes, single color', flat_color: 'flat colored shapes, no gradients', app_icon: 'rounded-square app icon with a simple central symbol', isometric: 'simple isometric illustration icon' }[style]
         const prompt = `Icon design for "${subject}": ${look}${colors ? `, colors ${colors}` : ''}. One icon, centered, plain background, readable at 24 px. ${DESIGN_GUARD}`
         return await run(format === 'svg' ? { prompt, output_format: 'svg' } : { prompt, size: '1024x1024', quality: 'medium', output_format: 'png' }, wait_seconds, return_preview)
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -631,7 +647,7 @@ function buildDesign(server: McpServer, h: ProfileHelpers) {
         const space = text_space === 'none' ? '' : ` Keep the ${text_space} third empty and calm for slide text.`
         const prompt = `Presentation slide visual about ${topic}: ${look}${colors ? `, colors ${colors}` : ''}. No text in the image.${space} ${DESIGN_GUARD}`
         return await run({ prompt, aspect_ratio, resolution: '2K', quality: 'medium', output_format: 'png' }, wait_seconds, return_preview)
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -651,7 +667,7 @@ function buildDesign(server: McpServer, h: ProfileHelpers) {
         const label = { mobile_app: 'mobile app screen', web_page: 'web page', dashboard: 'web dashboard' }[screen]
         const prompt = `High-fidelity UI mockup of a ${label}, shown flat and straight-on (no device frame, no hands): ${description}${style ? ` Style: ${style}.` : ''} Legible interface labels, consistent spacing and alignment. ${DESIGN_GUARD}`
         return await run({ prompt, aspect_ratio: screen === 'mobile_app' ? '9:16' : '16:9', resolution: '2K', quality: 'medium', output_format: 'png' }, wait_seconds, return_preview)
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -668,7 +684,7 @@ function buildDesign(server: McpServer, h: ProfileHelpers) {
       try {
         const id = job_id.trim()
         return await designResult(h, id, await h.pollTask('images', id, wait_seconds), return_preview)
-      } catch (e) { return fail(e) }
+      } catch (e) { return fail(e, h.profile) }
     },
   )
 
@@ -677,8 +693,9 @@ function buildDesign(server: McpServer, h: ProfileHelpers) {
 
 export function buildProfileServer(profile: Profile, h: ProfileHelpers): McpServer {
   const server = new McpServer({ name: PROFILE_INFO[profile].serverName, version: h.version })
-  if (profile === 'transcribe') buildTranscribe(server, h)
-  else if (profile === 'social') buildSocial(server, h)
-  else buildDesign(server, h)
+  const hp: ProfileHelpers = { ...h, profile }
+  if (profile === 'transcribe') buildTranscribe(server, hp)
+  else if (profile === 'social') buildSocial(server, hp)
+  else buildDesign(server, hp)
   return server
 }
